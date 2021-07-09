@@ -2,7 +2,6 @@ import {
 	AccountTrackerController,
 	AddressBookController,
 	AssetsContractController,
-	AssetsController,
 	AssetsDetectionController,
 	ControllerMessenger,
 	ComposableController,
@@ -17,7 +16,9 @@ import {
 	TokenRatesController,
 	TransactionController,
 	TypedMessageManager,
-	WalletDevice
+	WalletDevice,
+	TokensController,
+	CollectiblesController
 } from '@metamask/controllers';
 
 import SwapsController from '@metamask/swaps-controller';
@@ -96,12 +97,17 @@ class Engine {
 				}
 			});
 			const assetsContractController = new AssetsContractController();
-			const assetsController = new AssetsController({
+			const collectiblesController = new CollectiblesController({
 				onPreferencesStateChange: listener => preferencesController.subscribe(listener),
 				onNetworkStateChange: listener => networkController.subscribe(listener),
 				getAssetName: assetsContractController.getAssetName.bind(assetsContractController),
 				getAssetSymbol: assetsContractController.getAssetSymbol.bind(assetsContractController),
 				getCollectibleTokenURI: assetsContractController.getCollectibleTokenURI.bind(assetsContractController)
+			});
+
+			const tokensController = new TokensController({
+				onPreferencesStateChange: listener => preferencesController.subscribe(listener),
+				onNetworkStateChange: listener => networkController.subscribe(listener)
 			});
 			this.controllerMessenger = new ControllerMessenger();
 			const currencyRateController = new CurrencyRateController({
@@ -127,19 +133,31 @@ class Engine {
 				}),
 				new AddressBookController(),
 				assetsContractController,
-				assetsController,
+				collectiblesController,
+				tokensController,
 				new AssetsDetectionController({
-					onAssetsStateChange: listener => assetsController.subscribe(listener),
+					onCollectiblesStateChange: listener => collectiblesController.subscribe(listener),
+					onTokensStateChange: listener => tokensController.subscribe(listener),
 					onPreferencesStateChange: listener => preferencesController.subscribe(listener),
 					onNetworkStateChange: listener => networkController.subscribe(listener),
-					getOpenSeaApiKey: () => assetsController.openSeaApiKey,
+					getOpenSeaApiKey: () => collectiblesController.openSeaApiKey,
 					getBalancesInSingleCall: assetsContractController.getBalancesInSingleCall.bind(
 						assetsContractController
 					),
-					addTokens: assetsController.addTokens.bind(assetsController),
-					addCollectible: assetsController.addCollectible.bind(assetsController),
-					removeCollectible: assetsController.removeCollectible.bind(assetsController),
-					getAssetsState: () => assetsController.state
+					addTokens: tokensController.addTokens.bind(tokensController),
+					addCollectible: collectiblesController.addCollectible.bind(collectiblesController),
+					removeCollectible: collectiblesController.removeCollectible.bind(collectiblesController),
+					getCollectiblesState: () => collectiblesController.state,
+					getTokenState: () => tokensController.state,
+					getTokenListState: () => {
+						const tokenList = {};
+						for (const address in contractMap) {
+							if (contractMap[address].erc20) {
+								tokenList[address] = contractMap[address];
+							}
+						}
+						return tokenList;
+					}
 				}),
 				currencyRateController,
 				new PersonalMessageManager(),
@@ -149,16 +167,17 @@ class Engine {
 				preferencesController,
 				new TokenBalancesController(
 					{
-						onAssetsStateChange: listener => assetsController.subscribe(listener),
+						onTokensStateChange: listener => tokensController.subscribe(listener),
 						getSelectedAddress: () => preferencesController.state.selectedAddress,
 						getBalanceOf: assetsContractController.getBalanceOf.bind(assetsContractController)
 					},
 					{ interval: 10000 }
 				),
 				new TokenRatesController({
-					onAssetsStateChange: listener => assetsController.subscribe(listener),
+					onTokensStateChange: listener => tokensController.subscribe(listener),
 					onCurrencyRateStateChange: listener =>
-						this.controllerMessenger.subscribe(`${currencyRateController.name}:stateChange`, listener)
+						this.controllerMessenger.subscribe(`${currencyRateController.name}:stateChange`, listener),
+					onNetworkStateChange: listener => networkController.subscribe(listener)
 				}),
 				new TransactionController({
 					getNetworkState: () => networkController.state,
@@ -194,13 +213,13 @@ class Engine {
 			}, {});
 
 			const {
-				AssetsController: assets,
+				CollectiblesController: collectibles,
 				KeyringController: keyring,
 				NetworkController: network,
 				TransactionController: transaction
 			} = this.context;
 
-			assets.setApiKey(process.env.MM_OPENSEA_KEY);
+			collectibles.setApiKey(process.env.MM_OPENSEA_KEY);
 			network.refreshNetwork();
 			transaction.configure({ sign: keyring.signTransaction.bind(keyring) });
 			network.subscribe(state => {
@@ -303,16 +322,16 @@ class Engine {
 			CurrencyRateController,
 			PreferencesController,
 			AccountTrackerController,
-			AssetsController,
 			TokenBalancesController,
-			TokenRatesController
+			TokenRatesController,
+			TokensController
 		} = this.context;
 		const { selectedAddress } = PreferencesController.state;
 		const { currentCurrency } = CurrencyRateController.state;
 		const conversionRate =
 			CurrencyRateController.state.conversionRate === null ? 0 : CurrencyRateController.state.conversionRate;
 		const { accounts } = AccountTrackerController.state;
-		const { tokens } = AssetsController.state;
+		const { tokens } = TokensController.state;
 		let ethFiat = 0;
 		let tokenFiat = 0;
 		const decimalsToShow = (currentCurrency === 'usd' && 2) || undefined;
@@ -351,8 +370,8 @@ class Engine {
 			const {
 				engine: { backgroundState }
 			} = store.getState();
-			const collectibles = backgroundState.AssetsController.collectibles;
-			const tokens = backgroundState.AssetsController.tokens;
+			const collectibles = backgroundState.CollectiblesController.collectibles;
+			const tokens = backgroundState.TokensController.tokens;
 			const tokenBalances = backgroundState.TokenBalancesController.contractBalances;
 
 			let tokenFound = false;
@@ -374,19 +393,28 @@ class Engine {
 		// Whenever we are gonna start a new wallet
 		// either imported or created, we need to
 		// get rid of the old data from state
-		const { TransactionController, AssetsController, TokenBalancesController, TokenRatesController } = this.context;
+		const {
+			TransactionController,
+			CollectiblesController,
+			TokenBalancesController,
+			TokenRatesController,
+			TokensController
+		} = this.context;
 
 		//Clear assets info
-		AssetsController.update({
+		CollectiblesController.update({
 			allCollectibleContracts: {},
 			allCollectibles: {},
-			allTokens: {},
 			collectibleContracts: [],
 			collectibles: [],
-			ignoredCollectibles: [],
+			ignoredCollectibles: []
+		});
+
+		TokensController.update({
+			allTokens: {},
 			ignoredTokens: [],
-			suggestedAssets: [],
-			tokens: []
+			tokens: [],
+			suggestedAssets: []
 		});
 
 		TokenBalancesController.update({ contractBalances: {} });
@@ -406,7 +434,7 @@ class Engine {
 			PreferencesController,
 			NetworkController,
 			TransactionController,
-			AssetsController
+			TokensController
 		} = this.context;
 
 		// Select same network ?
@@ -448,7 +476,7 @@ class Engine {
 								.map(token => ({ ...token, address: toChecksumAddress(token.address) }));
 			});
 		});
-		await AssetsController.update({ allTokens });
+		await TokensController.update({ allTokens });
 
 		// Restore preferences
 		const updatedPref = { ...preferences, identities: {} };
@@ -505,7 +533,7 @@ export default {
 			AccountTrackerController,
 			AddressBookController,
 			AssetsContractController,
-			AssetsController,
+			CollectiblesController,
 			AssetsDetectionController,
 			CurrencyRateController,
 			KeyringController,
@@ -517,7 +545,8 @@ export default {
 			TokenRatesController,
 			TransactionController,
 			TypedMessageManager,
-			SwapsController
+			SwapsController,
+			TokensController
 		} = instance.datamodel.state;
 
 		// normalize `null` currencyRate to `0`
@@ -531,7 +560,7 @@ export default {
 			AccountTrackerController,
 			AddressBookController,
 			AssetsContractController,
-			AssetsController,
+			CollectiblesController,
 			AssetsDetectionController,
 			CurrencyRateController: modifiedCurrencyRateControllerState,
 			KeyringController,
@@ -541,6 +570,7 @@ export default {
 			PreferencesController,
 			TokenBalancesController,
 			TokenRatesController,
+			TokensController,
 			TransactionController,
 			TypedMessageManager,
 			SwapsController
