@@ -311,10 +311,16 @@ class Transactions extends PureComponent {
 		}
 		const { submittedTransactions, confirmedTransactions, header } = this.props;
 		const { cancelConfirmDisabled, speedUpConfirmDisabled } = this.state;
-		const transactions =
+		let transactions =
 			submittedTransactions && submittedTransactions.length
 				? submittedTransactions.concat(confirmedTransactions)
 				: this.props.transactions;
+
+		// account for speedUps
+		transactions = transactions.filter(
+			({ transaction: { nonce } }) =>
+				!submittedTransactions.find(({ transaction }) => transaction.nonce === nonce)
+		);
 
 		return (
 			<View style={styles.wrapper} testID={'transactions-screen'}>
